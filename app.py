@@ -14,16 +14,16 @@ st.title("📱 Escáner Móvil Pericial CVC")
 st.markdown("""
 **Modo Captura por Cámara**
 Tome una foto directa del campo visual impreso. 
-*💡 Consejo: Acerque la cámara para que el gráfico circular ocupe casi toda la pantalla.*
+*💡 Consejo de Oro: Acerque la cámara para que el gráfico ocupe casi toda la pantalla.*
 """)
 
 # ==========================================
-# 🔒 MOTOR DE VISIÓN (RADAR DE INTERSECCIÓN)
+# 🔒 MOTOR DE VISIÓN (RADAR ADAPTATIVO)
 # ==========================================
 def find_and_clean_axes(thresh):
     alto, ancho = thresh.shape
     
-    # Aislar líneas rectas (Más estrictos: deben ocupar al menos 15% de la hoja)
+    # Aislar líneas rectas (Más estrictos)
     k_len_h = max(20, int(ancho * 0.15))
     k_len_v = max(20, int(alto * 0.15))
     kernel_h_clean = cv2.getStructuringElement(cv2.MORPH_RECT, (k_len_h, 1))
@@ -32,7 +32,7 @@ def find_and_clean_axes(thresh):
     lineas_h_puras = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel_h_clean)
     lineas_v_puras = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel_v_clean)
     
-    # RADAR: Encontrar el punto exacto donde se cruzan las líneas (Ignora textos)
+    # RADAR: Encontrar el punto exacto donde se cruzan
     interseccion = cv2.bitwise_and(lineas_h_puras, lineas_v_puras)
     zona_media_inter = interseccion[int(alto*0.2):int(alto*0.8), int(ancho*0.2):int(ancho*0.8)]
     min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(zona_media_inter)
@@ -44,13 +44,24 @@ def find_and_clean_axes(thresh):
         cy = int(alto * 0.5)
         cx = int(ancho * 0.5)
     
-    eje_derecho = lineas_h_puras[cy-5:cy+5, cx:]
-    _, x_h = np.where(eje_derecho > 0)
-    dist_60 = np.max(x_h) if len(x_h) > 0 else (ancho - cx)*0.75
-    dist_60 = min(dist_60, ancho * 0.45) # Límite de seguridad
+    # ESCALA A PRUEBA DE INCLINACIÓN (Tolerancia a fotos torcidas)
+    y_coords, x_coords = np.where(lineas_h_puras > 0)
+    tolerancia_y = max(20, int(alto * 0.05)) # Margen amplio para líneas diagonales
+    mask_cerca_cy = np.abs(y_coords - cy) < tolerancia_y
+    x_validos = x_coords[mask_cerca_cy]
     
-    grosor_fino_h = max(3, int(alto*0.004))
-    grosor_fino_v = max(3, int(ancho*0.004))
+    if len(x_validos) > 0:
+        dist_60_izq = cx - np.min(x_validos)
+        dist_60_der = np.max(x_validos) - cx
+        dist_60 = (dist_60_izq + dist_60_der) / 2.0
+    else:
+        dist_60 = ancho * 0.35 
+        
+    dist_60 = min(dist_60, ancho * 0.48) # Límite seguro
+    
+    # Fabricar el Borrador Anti-Regla (Bisturí fino)
+    grosor_fino_h = max(2, int(alto*0.003))
+    grosor_fino_v = max(2, int(ancho*0.003))
     borrador_h_ticks = cv2.dilate(lineas_h_puras, np.ones((grosor_fino_h, 1), np.uint8))
     borrador_v_ticks = cv2.dilate(lineas_v_puras, np.ones((1, grosor_fino_v), np.uint8))
     borrador_anti_regla = cv2.add(borrador_h_ticks, borrador_v_ticks)
@@ -71,11 +82,13 @@ def detect_and_classify_symbols(img_bin, borrador_anti_regla, centro, pixels_por
     img_auditoria[:,:] = [255, 255, 255] 
     
     campo_limpio = cv2.subtract(img_bin, borrador_anti_regla)
-    grosor_pegamento = max(3, int(alto*0.004)) + 2
+    
+    # Pegamento más sutil para fotos reducidas
+    grosor_pegamento = max(2, int(alto*0.003)) + 1
     simbolos_unidos = cv2.dilate(campo_limpio, np.ones((grosor_pegamento, grosor_pegamento), np.uint8))
     
     num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(simbolos_unidos, connectivity=8)
-    area_min, area_max = (ancho * 0.002) ** 2, (ancho * 0.02) ** 2
+    area_min, area_max = (ancho * 0.0015) ** 2, (ancho * 0.025) ** 2
     cx, cy = centro
     cuadrados_count, circulos_count = 0, 0
     
@@ -195,7 +208,7 @@ def procesar_panel_camara(titulo_ojo, key_suffix):
             nparr = np.frombuffer(archivo.getvalue(), np.uint8)
             img_raw = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
             
-            # COMPRESOR ÓPTICO PARA EVITAR COLAPSOS
+            # 1. COMPRESOR ÓPTICO
             alto_raw, ancho_raw = img_raw.shape[:2]
             max_dimension = 1000
             if ancho_raw > max_dimension or alto_raw > max_dimension:
@@ -206,11 +219,12 @@ def procesar_panel_camara(titulo_ojo, key_suffix):
 
             img_original = img.copy()
             
-            # NORMALIZACIÓN Y FILTRO DE SOMBRAS
+            # 2. UMBRAL ADAPTATIVO (Magia contra sombras)
             gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-            gray_norm = cv2.normalize(gray, None, 0, 255, cv2.NORM_MINMAX)
-            gray_blur = cv2.GaussianBlur(gray_norm, (5, 5), 0)
-            _, thresh = cv2.threshold(gray_blur, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+            # Analiza áreas de 41x41 píxeles para ignorar sombras gigantes y rescatar puntos negros
+            thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 41, 10)
+            # Limpiar ruidito leve de la foto
+            thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, np.ones((2,2), np.uint8))
             
             try:
                 centro, borrador_anti_regla, dist_60 = find_and_clean_axes(thresh)
@@ -228,7 +242,7 @@ def procesar_panel_camara(titulo_ojo, key_suffix):
                 st.image(Image.fromarray(cv2.cvtColor(img_pantalla, cv2.COLOR_BGR2RGB)), caption=f"Auditoría Visual {titulo_ojo}", use_container_width=True)
                 
             except Exception as e:
-                st.error(f"⚠️ Hubo un problema al procesar los ejes. Intente tomar la foto más plana. Detalle: {e}")
+                st.error(f"⚠️ Hubo un problema al procesar la imagen. Intente evitar sombras muy duras. Detalle: {e}")
                 
             st.markdown(f"**Corrección Pericial Manual**")
             col_a, col_b = st.columns(2)
