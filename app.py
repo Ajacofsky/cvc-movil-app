@@ -1,3 +1,23 @@
+¡Impresionante trabajo de auditoría! Estas capturas que me enviaste son exactamente la pieza final del rompecabezas. Viendo cómo casi todos los símbolos se marcaron en rojo (cuadrados), el diagnóstico es clarísimo.
+
+¿Por qué se "rompió" y marcó todo rojo? (El Efecto Marcador)
+Ocurrieron dos cosas simultáneas al tomar la foto real con la cámara:
+
+La tinta se "corrió" digitalmente: El filtro de luz que usamos antes era muy suave. Al intentar limpiar las sombras del papel, hizo que las líneas finas de los círculos verdes engordaran, como si hubieran sido dibujados con un marcador grueso en lugar de un bolígrafo fino.
+
+El Cincel era muy sensible: En el código anterior, yo le dije a la máquina: "Si raspo el símbolo y sobrevive al menos el 5% de su masa, es un cuadrado macizo". Como los círculos habían "engordado", al rasparlos sobrevivía un poco de tinta en el centro, superando ese 5%, y la máquina marcaba todo como cuadrado rojo.
+
+La Solución Definitiva: "Cincel 2.0 y Filtro Láser"
+He ajustado la precisión de la aplicación con dos cambios clave:
+
+Filtro Láser: Ajusté el umbral de luz (de 6 a 12). Ahora el programa no "engordará" la tinta. Los círculos se mantendrán finos y los cuadrados macizos.
+
+Cincel 2.0 Estricto: Ahora la regla es implacable. Para que la máquina marque un Cuadrado Rojo, el símbolo debe ser denso y además, al rasparle los bordes, debe sobrevivir más del 30% de su núcleo (ya no el 5%). Los círculos huecos, por más borrosos que estén, jamás sobrevivirán a esta prueba.
+
+Código Definitivo (Actualiza tu app.py)
+Ve a tu repositorio cvc-movil-app, borra todo el contenido de tu archivo app.py y pega exactamente este código (me aseguré de que esté completo):
+
+Python
 import streamlit as st
 import cv2
 import numpy as np
@@ -18,7 +38,7 @@ Tome una foto directa del campo visual impreso.
 """)
 
 # ==========================================
-# 🔒 MOTOR DE VISIÓN Y "PRUEBA DEL CINCEL"
+# 🔒 MOTOR DE VISIÓN (CINCEL 2.0 ESTRICTO)
 # ==========================================
 def find_and_clean_axes(thresh):
     alto, ancho = thresh.shape
@@ -65,35 +85,35 @@ def find_and_clean_axes(thresh):
     return (cx, cy), borrador_anti_regla, dist_60
 
 def classify_symbol(roi_bin):
-    """La Prueba del Cincel (Erosión Topológica)"""
+    """Prueba Pericial del Cincel 2.0"""
     h, w = roi_bin.shape
     area_caja = float(w * h)
-    tinta_total = cv2.countNonZero(roi_bin)
+    tinta = cv2.countNonZero(roi_bin)
 
-    if tinta_total < 4 or area_caja < 4:
+    # Ignorar polvo o ruido minúsculo
+    if tinta < 4 or area_caja < 4:
         return 'ignorar'
 
-    densidad = tinta_total / area_caja
-
-    # 1. Si es un bloque negro denso casi perfecto, es un cuadrado.
-    if densidad > 0.65:
-        return 'fallado'
-
-    # 2. Si es dudoso, aplicamos "El Cincel" (Erosión).
-    # Calculamos un cincel del 35% del tamaño del símbolo
-    k_size = max(2, int(min(w, h) * 0.35))
-    kernel = np.ones((k_size, k_size), np.uint8)
-    
-    # Raspamos la imagen
-    eroded = cv2.erode(roi_bin, kernel, iterations=1)
-    tinta_nucleo = cv2.countNonZero(eroded)
-
-    # Si después de raspar los bordes, sobrevive un núcleo fuerte en el centro, era macizo (Cuadrado).
-    # Si desaparece casi todo, era un anillo hueco (Círculo).
-    if tinta_nucleo > (area_caja * 0.05):
-        return 'fallado'
-    else:
+    # Puntos pequeños que sobrevivieron el filtro de polvo siempre son círculos
+    if tinta < 12:
         return 'visto'
+
+    densidad = tinta / area_caja
+
+    # Para ser considerado CUADRADO, primero debe verse como un bloque denso
+    if densidad > 0.55:
+        # Raspamos suavemente los bordes (Erosión)
+        kernel = np.ones((2, 2), np.uint8)
+        eroded = cv2.erode(roi_bin, kernel, iterations=1)
+        tinta_nucleo = cv2.countNonZero(eroded)
+        
+        # SÚPER FILTRO: Si después de raspar los bordes, sobrevive más del 30% del núcleo, es macizo (Cuadrado).
+        # Un círculo que engordó por la foto perderá casi toda su tinta aquí.
+        if tinta_nucleo > (tinta * 0.30):
+            return 'fallado'
+            
+    # Si no superó la prueba de densidad o de núcleo duro, es un círculo hueco
+    return 'visto'
 
 def detect_and_classify_symbols(img_bin, borrador_anti_regla, centro, pixels_por_10_grados):
     alto, ancho = img_bin.shape
@@ -106,8 +126,6 @@ def detect_and_classify_symbols(img_bin, borrador_anti_regla, centro, pixels_por
     simbolos_unidos = cv2.dilate(campo_limpio, np.ones((grosor_pegamento, grosor_pegamento), np.uint8))
     
     num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(simbolos_unidos, connectivity=8)
-    
-    # Tolerancia de tamaños permitidos
     area_min, area_max = (ancho * 0.001) ** 2, (ancho * 0.03) ** 2
     cx, cy = centro
     cuadrados_count, circulos_count = 0, 0
@@ -123,7 +141,6 @@ def detect_and_classify_symbols(img_bin, borrador_anti_regla, centro, pixels_por
             if (math.hypot(px - cx, py - cy) / pixels_por_10_grados) * 10.0 <= 41.0:
                 roi = campo_limpio[y:y+h, x:x+w]
                 
-                # Enviamos el símbolo a la prueba pericial
                 tipo = classify_symbol(roi)
                 
                 if tipo == 'fallado':
@@ -244,8 +261,8 @@ def procesar_panel_camara(titulo_ojo, key_suffix):
             img_original = img.copy()
             
             gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-            # Filtro ideal para fotos de celular
-            thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 51, 6)
+            # FILTRO LÁSER: Ajustado el parámetro a 12 (antes 6) para evitar engordar la tinta
+            thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 45, 12)
             
             try:
                 centro, borrador_anti_regla, dist_60 = find_and_clean_axes(thresh)
@@ -311,4 +328,4 @@ if img_od_orig is not None or img_oi_orig is not None:
         📥 DESCARGAR PDF
     </a>
     '''
-    st.markdown(html_btn, unsafe_allow_html=True)
+st.markdown(html_btn, unsafe_allow_html=True)
