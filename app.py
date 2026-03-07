@@ -320,4 +320,12 @@ else:
         st.metric("INCAPACIDAD UNILATERAL", f"{incap_od:.2f}%")
 
 if img_od_orig is not None or img_oi_orig is not None:
-    nombre_archivo = nombre_archivo_input.
+    nombre_archivo = nombre_archivo_input.strip().replace(" ", "_") if nombre_archivo_input.strip() else "Dictamen"
+    b64_pdf = generar_pdf_moderno(incap_od, grados_od, img_od_orig, incap_oi, grados_oi, img_oi_orig, incap_total_bilateral, modo_evaluacion)
+    
+    html_btn = f'''
+    <a href="data:application/pdf;base64,{b64_pdf}" download="Dictamen_Pericial_{nombre_archivo}.pdf" style="display: block; padding: 15px; background-color: #2980b9; color: white; text-align: center; text-decoration: none; border-radius: 8px; font-weight: bold; font-size: 18px; margin-top: 20px;">
+        📥 DESCARGAR PDF
+    </a>
+    '''
+    st.markdown(html_btn, unsafe_allow_html=True)
