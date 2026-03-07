@@ -81,10 +81,10 @@ def detect_and_classify_symbols(img_bin, borrador_anti_regla, centro, pixels_por
     
     if pixels_por_10_grados <= 0: pixels_por_10_grados = 1.0 
     
-    # NUEVA MAGIA: Calculamos cuánto debería "pesar" (en píxeles) un cuadrado negro a esta escala
+    # MAGIA: Calculamos cuánto debería "pesar" un cuadrado negro a esta escala
     lado_cuadrado_esperado = pixels_por_10_grados * 0.15 
     masa_cuadrado_esperada = lado_cuadrado_esperado ** 2
-    umbral_decision_masa = masa_cuadrado_esperada * 0.35 # Punto de inflexión
+    umbral_decision_masa = masa_cuadrado_esperada * 0.35 
         
     for i in range(1, num_labels): 
         x, y, w, h, area = stats[i, cv2.CC_STAT_LEFT], stats[i, cv2.CC_STAT_TOP], stats[i, cv2.CC_STAT_WIDTH], stats[i, cv2.CC_STAT_HEIGHT], stats[i, cv2.CC_STAT_AREA]
@@ -94,20 +94,16 @@ def detect_and_classify_symbols(img_bin, borrador_anti_regla, centro, pixels_por
             
             if (math.hypot(px - cx, py - cy) / pixels_por_10_grados) * 10.0 <= 41.0:
                 roi = campo_limpio[y:y+h, x:x+w]
-                tinta = cv2.countNonZero(roi) # Cantidad real de tinta negra
+                tinta = cv2.countNonZero(roi) 
                 
-                # Ignoramos si es un ruidito microscópico
                 if tinta < 4: continue
                 
                 densidad = tinta / float(w * h)
                 
-                # CLASIFICACIÓN POR MASA Y DENSIDAD (Inmune a fotos borrosas)
-                # Si tiene mucha tinta, o si es un bloque sólido denso: ES CUADRADO
                 if tinta > umbral_decision_masa or (densidad > 0.55 and tinta > umbral_decision_masa * 0.4):
                     cuadrados_count += 1
                     cv2.rectangle(img_auditoria, (x, y), (x+w, y+h), (0, 0, 255), 2)
                 else:
-                    # Si es pequeño, fino o hueco: ES CÍRCULO
                     circulos_count += 1
                     cv2.rectangle(img_auditoria, (x, y), (x+w, y+h), (0, 255, 0), 1)
 
@@ -221,11 +217,8 @@ def procesar_panel_camara(titulo_ojo, key_suffix):
 
             img_original = img.copy()
             
-            # FILTRO DE LUZ MÁS GENTIL
             gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-            # Redujimos el factor de contraste (de 10 a 6) para salvar los círculos finos
             thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 51, 6)
-            # ELIMINADO: cv2.morphologyEx (Era lo que borraba tus círculos)
             
             try:
                 centro, borrador_anti_regla, dist_60 = find_and_clean_axes(thresh)
@@ -236,4 +229,59 @@ def procesar_panel_camara(titulo_ojo, key_suffix):
                 img_pantalla = img.copy()
                 for i in range(3):
                     mask = img_auditoria_bin[:,:,i] != 255
-                    img_pantalla[mask, i] = img_auditoria_
+                    img_pantalla[mask, i] = img_auditoria_bin[mask, i]
+                cv2.circle(img_pantalla, centro, int(4.0 * pixels_por_10_grados), (0, 165, 255), 3)
+
+                st.success("✅ ¡Análisis completado!")
+                st.image(Image.fromarray(cv2.cvtColor(img_pantalla, cv2.COLOR_BGR2RGB)), caption=f"Auditoría Visual {titulo_ojo}", use_container_width=True)
+                
+            except Exception as e:
+                st.error(f"⚠️ Error al encuadrar la foto. Acerque más la cámara al círculo. Detalle: {e}")
+                
+            st.markdown(f"**Corrección Pericial Manual**")
+            col_a, col_b = st.columns(2)
+            with col_a:
+                cuadrados_final = st.number_input("Cuadrados (Fallados):", min_value=0, max_value=104, value=t_cuad, step=1, key=f"cuad_{key_suffix}")
+            with col_b:
+                circulos_final = st.number_input("Círculos (Vistos):", min_value=0, max_value=104, value=t_circ, step=1, key=f"circ_{key_suffix}")
+                
+            grados_finales = (cuadrados_final / 104.0) * 320.0
+            incapacidad_final = (grados_finales / 320.0) * 100 * 0.25
+            
+            st.info(f"👉 Incapacidad Detectada: {incapacidad_final:.2f}%")
+            
+    return incapacidad_final, grados_finales, img_original
+
+if modo_evaluacion == "Unilateral (1 Ojo)":
+    incap_od, grados_od, img_od_orig = procesar_panel_camara("Ojo Evaluado", "unico")
+    incap_oi, grados_oi, img_oi_orig = 0.0, 0.0, None
+else:
+    incap_od, grados_od, img_od_orig = procesar_panel_camara("Ojo Derecho (OD)", "od")
+    st.divider()
+    incap_oi, grados_oi, img_oi_orig = procesar_panel_camara("Ojo Izquierdo (OI)", "oi")
+
+st.divider()
+
+st.header("📋 Exportar Dictamen")
+nombre_archivo_input = st.text_input("Nombre del paciente para el archivo:", placeholder="Ej: Perez_Juan")
+incap_total_bilateral = 0.0
+
+if modo_evaluacion == "Bilateral (OD y OI)":
+    if img_od_orig is not None or img_oi_orig is not None:
+        suma_aritmetica = incap_od + incap_oi
+        incap_total_bilateral = suma_aritmetica * 1.5
+        st.metric("INCAPACIDAD TOTAL BILATERAL", f"{incap_total_bilateral:.2f}%")
+else:
+    if img_od_orig is not None:
+        st.metric("INCAPACIDAD UNILATERAL", f"{incap_od:.2f}%")
+
+if img_od_orig is not None or img_oi_orig is not None:
+    nombre_archivo = nombre_archivo_input.strip().replace(" ", "_") if nombre_archivo_input.strip() else "Dictamen"
+    b64_pdf = generar_pdf_moderno(incap_od, grados_od, img_od_orig, incap_oi, grados_oi, img_oi_orig, incap_total_bilateral, modo_evaluacion)
+    
+    html_btn = f'''
+    <a href="data:application/pdf;base64,{b64_pdf}" download="Dictamen_Pericial_{nombre_archivo}.pdf" style="display: block; padding: 15px; background-color: #2980b9; color: white; text-align: center; text-decoration: none; border-radius: 8px; font-weight: bold; font-size: 18px; margin-top: 20px;">
+        📥 DESCARGAR PDF
+    </a>
+    '''
+    st.markdown(html_btn, unsafe_allow_html=True)
