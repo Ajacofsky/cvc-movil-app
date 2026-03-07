@@ -18,7 +18,7 @@ Tome una foto directa del campo visual impreso.
 """)
 
 # ==========================================
-# 🔒 MOTOR DE VISIÓN (CALIBRE FÍSICO)
+# 🔒 MOTOR DE VISIÓN (RADAR)
 # ==========================================
 def find_and_clean_axes(thresh):
     alto, ancho = thresh.shape
@@ -64,28 +64,49 @@ def find_and_clean_axes(thresh):
     
     return (cx, cy), borrador_anti_regla, dist_60
 
+# ==========================================
+# 🧠 EL ESCÁNER DE RAYOS X
+# ==========================================
 def classify_symbol(roi_bin, pixels_por_10_grados):
-    """Clasificador Pericial basado en Escala Física Real"""
     h, w = roi_bin.shape
     area_caja = float(w * h)
     tinta = cv2.countNonZero(roi_bin)
 
+    # Ignorar ruido microscópico
     if tinta < 3 or area_caja < 3:
         return 'ignorar'
 
-    # CALIBRE MATEMÁTICO: Un cuadrado negro mide aprox 15% de la distancia de 10 grados
-    lado_esperado = pixels_por_10_grados * 0.15 
+    # Calibre Físico: Cuánto debería medir un cuadrado real
+    lado_esperado = pixels_por_10_grados * 0.16 
     area_esperada = lado_esperado ** 2
 
-    # Si la mancha tiene menos del 35% de la tinta de un cuadrado real, 
-    # es físicamente imposible que sea un cuadrado. Es un punto o ruido (Verde).
+    # 1. FILTRO DE TAMAÑO ESTRICTO
+    # Si la mancha no tiene ni la mitad del tamaño de un cuadrado, es un punto (Verde)
+    if area_caja < (area_esperada * 0.40):
+        return 'visto'
+        
     if tinta < (area_esperada * 0.35):
         return 'visto'
 
-    # Si es lo suficientemente grande, comprobamos que sea denso (no un círculo hueco)
+    # 2. ESCÁNER DE RAYOS X (La prueba final del núcleo hueco)
+    # Extraemos un cuadradito que representa el 40% del puro centro del símbolo
+    cx, cy = w // 2, h // 2
+    rw, rh = max(1, int(w * 0.20)), max(1, int(h * 0.20))
+    nucleo = roi_bin[cy-rh : cy+rh+1, cx-rw : cx+rw+1]
+    
+    tinta_nucleo = cv2.countNonZero(nucleo)
+    area_nucleo = float(nucleo.size)
+
+    # Si el centro está hueco (menos del 45% de tinta negra en el núcleo),
+    # es físicamente imposible que sea un cuadrado. ¡Es un anillo borroso!
+    if tinta_nucleo < (area_nucleo * 0.45):
+        return 'visto'
+
+    # 3. FILTRO DE BLOQUE SÓLIDO
+    # Si es grande, y además su núcleo es negro sólido, comprobamos su densidad general
     densidad = tinta / area_caja
-    if densidad > 0.45:
-        return 'fallado'
+    if densidad > 0.50:
+        return 'fallado' # Es un CUADRADO ROJO
     else:
         return 'visto'
 
@@ -101,7 +122,6 @@ def detect_and_classify_symbols(img_bin, borrador_anti_regla, centro, pixels_por
     
     num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(simbolos_unidos, connectivity=8)
     
-    # Límites de tamaño muy amplios para que nada quede afuera
     area_min = (ancho * 0.0005) ** 2 
     area_max = (ancho * 0.04) ** 2
     cx, cy = centro
@@ -118,7 +138,7 @@ def detect_and_classify_symbols(img_bin, borrador_anti_regla, centro, pixels_por
             if (math.hypot(px - cx, py - cy) / pixels_por_10_grados) * 10.0 <= 41.0:
                 roi = campo_limpio[y:y+h, x:x+w]
                 
-                # Le pasamos la escala física al clasificador
+                # Pasamos la escala real para activar el Escáner de Rayos X
                 tipo = classify_symbol(roi, pixels_por_10_grados)
                 
                 if tipo == 'fallado':
@@ -224,7 +244,7 @@ def procesar_panel_camara(titulo_ojo, key_suffix):
     t_cuad, t_circ = 0, 0
     
     if archivo is not None:
-        with st.spinner(f"Analizando Escala Física Real..."):
+        with st.spinner(f"Analizando con Escáner de Rayos X..."):
             nparr = np.frombuffer(archivo.getvalue(), np.uint8)
             img_raw = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
             
@@ -239,7 +259,7 @@ def procesar_panel_camara(titulo_ojo, key_suffix):
             img_original = img.copy()
             
             gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-            thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 51, 10)
+            thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 51, 12)
             
             try:
                 centro, borrador_anti_regla, dist_60 = find_and_clean_axes(thresh)
@@ -262,7 +282,7 @@ def procesar_panel_camara(titulo_ojo, key_suffix):
             st.markdown(f"**Corrección Pericial Manual**")
             col_a, col_b = st.columns(2)
             with col_a:
-                # BLINDAJE ANTI-CRASH: Nunca intentará mostrar un número mayor a 104, evitando el error rojo
+                # Sistema Anti-Crash: Nunca excederá 104, evitando los carteles rojos de error
                 val_cuad_seguro = min(t_cuad, 104)
                 cuadrados_final = st.number_input("Cuadrados (Fallados):", min_value=0, max_value=104, value=val_cuad_seguro, step=1, key=f"cuad_{key_suffix}")
             with col_b:
@@ -300,12 +320,4 @@ else:
         st.metric("INCAPACIDAD UNILATERAL", f"{incap_od:.2f}%")
 
 if img_od_orig is not None or img_oi_orig is not None:
-    nombre_archivo = nombre_archivo_input.strip().replace(" ", "_") if nombre_archivo_input.strip() else "Dictamen"
-    b64_pdf = generar_pdf_moderno(incap_od, grados_od, img_od_orig, incap_oi, grados_oi, img_oi_orig, incap_total_bilateral, modo_evaluacion)
-    
-    html_btn = f'''
-    <a href="data:application/pdf;base64,{b64_pdf}" download="Dictamen_Pericial_{nombre_archivo}.pdf" style="display: block; padding: 15px; background-color: #2980b9; color: white; text-align: center; text-decoration: none; border-radius: 8px; font-weight: bold; font-size: 18px; margin-top: 20px;">
-        📥 DESCARGAR PDF
-    </a>
-    '''
-    st.markdown(html_btn, unsafe_allow_html=True)
+    nombre_archivo = nombre_archivo_input.
