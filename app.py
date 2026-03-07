@@ -18,7 +18,7 @@ Tome una foto directa del campo visual impreso.
 """)
 
 # ==========================================
-# 🔒 MOTOR DE VISIÓN (RADAR DE PRECISIÓN)
+# 🔒 MOTOR DE VISIÓN (RADAR)
 # ==========================================
 def find_and_clean_axes(thresh):
     alto, ancho = thresh.shape
@@ -65,45 +65,41 @@ def find_and_clean_axes(thresh):
     return (cx, cy), borrador_anti_regla, dist_60
 
 # ==========================================
-# 🧠 EL CLASIFICADOR GEOMÉTRICO INMUTABLE
+# 🧠 ULTRASONIDO PERICIAL (INFALIBLE)
 # ==========================================
 def classify_symbol(roi_bin, pixels_por_10_grados):
-    h, w = roi_bin.shape
-    area_caja = float(w * h)
     tinta = cv2.countNonZero(roi_bin)
-
-    # 1. Ignorar pelusas o ruido de la foto
-    if tinta < 4 or area_caja < 4:
+    
+    # 1. Ignorar pelusas o ruido minúsculo de la cámara
+    if tinta < 3: 
         return 'ignorar'
 
-    lado_esperado = pixels_por_10_grados * 0.15 
-    area_esperada = lado_esperado ** 2
+    # Calculamos la escala física exacta
+    lado_teorico = pixels_por_10_grados * 0.15 
+    area_teorica = lado_teorico ** 2
+    radio_teorico = lado_teorico / 2.0
 
-    # 2. Si la mancha es muy pequeña comparada con un cuadrado estándar, es un círculo verde.
-    if area_caja < (area_esperada * 0.40) or tinta < (area_esperada * 0.30):
+    # 2. Filtro de Masa Absoluta
+    # Si la mancha tiene menos del 25% de la tinta de un cuadrado, es imposible que sea uno.
+    if tinta < (area_teorica * 0.25):
         return 'visto'
 
-    # 3. DOBLE FILTRO BLINDADO
-    # Filtro A (Rayos X): Analizamos el corazón del símbolo
-    cx, cy = w // 2, h // 2
-    rw, rh = max(1, int(w * 0.15)), max(1, int(h * 0.15))
-    nucleo = roi_bin[cy-rh : cy+rh+1, cx-rw : cx+rw+1]
-    
-    if nucleo.size > 0:
-        densidad_nucleo = cv2.countNonZero(nucleo) / float(nucleo.size)
-        # Si el centro no es negro intenso (<70% tinta), es un círculo que se emborronó
-        if densidad_nucleo < 0.70:
-            return 'visto'
+    # 3. EL ULTRASONIDO (Transformada de Distancia)
+    # Esto mide la "profundidad" o el "grosor" de la mancha negra ignorando sus bordes borrosos.
+    dist_transform = cv2.distanceTransform(roi_bin, cv2.DIST_L2, 3)
+    grosor_maximo = np.max(dist_transform)
 
-    # Filtro B (La Ley de Pi/4): 
-    # Un círculo, por más sólido que se vea, no puede llenar las 4 esquinas de su caja.
-    # Su máxima densidad teórica es 0.785. Un cuadrado supera el 0.85.
-    densidad_total = tinta / area_caja
-    
-    if densidad_total > 0.75: # Umbral mágico que divide el círculo del cuadrado
-        return 'fallado'
-    else:
-        return 'visto'
+    # REGLA DE ORO: Un cuadrado sólido tiene un núcleo grueso.
+    # Un círculo hueco o un punto difuso es "delgado" en su estructura.
+    if grosor_maximo >= (radio_teorico * 0.55):
+        # Doble check para evitar halos gigantes muy densos
+        h, w = roi_bin.shape
+        densidad = tinta / float(w * h)
+        if densidad > 0.40:
+            return 'fallado' # Es el cuadrado rojo sólido
+            
+    # Todo lo demás es un punto sano
+    return 'visto'
 
 def detect_and_classify_symbols(img_bin, borrador_anti_regla, centro, pixels_por_10_grados):
     alto, ancho = img_bin.shape
@@ -133,7 +129,7 @@ def detect_and_classify_symbols(img_bin, borrador_anti_regla, centro, pixels_por
             if (math.hypot(px - cx, py - cy) / pixels_por_10_grados) * 10.0 <= 41.0:
                 roi = campo_limpio[y:y+h, x:x+w]
                 
-                # Clasificación Geométrica
+                # Clasificación por Ultrasonido
                 tipo = classify_symbol(roi, pixels_por_10_grados)
                 
                 if tipo == 'fallado':
@@ -239,7 +235,7 @@ def procesar_panel_camara(titulo_ojo, key_suffix):
     t_cuad, t_circ = 0, 0
     
     if archivo is not None:
-        with st.spinner(f"Aplicando Inteligencia Geométrica..."):
+        with st.spinner(f"Escaneando por Ultrasonido Físico..."):
             nparr = np.frombuffer(archivo.getvalue(), np.uint8)
             img_raw = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
             
@@ -254,7 +250,9 @@ def procesar_panel_camara(titulo_ojo, key_suffix):
             img_original = img.copy()
             
             gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-            thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 51, 10)
+            
+            # FILTRO LÁSER ESTRICTO: Solo lo negro puro pasa (C = 15). Adiós a los halos borrosos.
+            thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 31, 15)
             
             try:
                 centro, borrador_anti_regla, dist_60 = find_and_clean_axes(thresh)
@@ -288,4 +286,38 @@ def procesar_panel_camara(titulo_ojo, key_suffix):
             
             st.info(f"👉 Incapacidad Detectada: {incapacidad_final:.2f}%")
             
-    return incapacidad_final, grados_final
+    return incapacidad_final, grados_finales, img_original
+
+if modo_evaluacion == "Unilateral (1 Ojo)":
+    incap_od, grados_od, img_od_orig = procesar_panel_camara("Ojo Evaluado", "unico")
+    incap_oi, grados_oi, img_oi_orig = 0.0, 0.0, None
+else:
+    incap_od, grados_od, img_od_orig = procesar_panel_camara("Ojo Derecho (OD)", "od")
+    st.divider()
+    incap_oi, grados_oi, img_oi_orig = procesar_panel_camara("Ojo Izquierdo (OI)", "oi")
+
+st.divider()
+
+st.header("📋 Exportar Dictamen")
+nombre_archivo_input = st.text_input("Nombre del paciente para el archivo:", placeholder="Ej: Perez_Juan")
+incap_total_bilateral = 0.0
+
+if modo_evaluacion == "Bilateral (OD y OI)":
+    if img_od_orig is not None or img_oi_orig is not None:
+        suma_aritmetica = incap_od + incap_oi
+        incap_total_bilateral = suma_aritmetica * 1.5
+        st.metric("INCAPACIDAD TOTAL BILATERAL", f"{incap_total_bilateral:.2f}%")
+else:
+    if img_od_orig is not None:
+        st.metric("INCAPACIDAD UNILATERAL", f"{incap_od:.2f}%")
+
+if img_od_orig is not None or img_oi_orig is not None:
+    nombre_archivo = nombre_archivo_input.strip().replace(" ", "_") if nombre_archivo_input.strip() else "Dictamen"
+    b64_pdf = generar_pdf_moderno(incap_od, grados_od, img_od_orig, incap_oi, grados_oi, img_oi_orig, incap_total_bilateral, modo_evaluacion)
+    
+    html_btn = f'''
+    <a href="data:application/pdf;base64,{b64_pdf}" download="Dictamen_Pericial_{nombre_archivo}.pdf" style="display: block; padding: 15px; background-color: #2980b9; color: white; text-align: center; text-decoration: none; border-radius: 8px; font-weight: bold; font-size: 18px; margin-top: 20px;">
+        📥 DESCARGAR PDF
+    </a>
+    '''
+    st.markdown(html_btn, unsafe_allow_html=True)
