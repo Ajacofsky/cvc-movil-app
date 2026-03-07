@@ -1,23 +1,3 @@
-¡Impresionante trabajo de auditoría! Estas capturas que me enviaste son exactamente la pieza final del rompecabezas. Viendo cómo casi todos los símbolos se marcaron en rojo (cuadrados), el diagnóstico es clarísimo.
-
-¿Por qué se "rompió" y marcó todo rojo? (El Efecto Marcador)
-Ocurrieron dos cosas simultáneas al tomar la foto real con la cámara:
-
-La tinta se "corrió" digitalmente: El filtro de luz que usamos antes era muy suave. Al intentar limpiar las sombras del papel, hizo que las líneas finas de los círculos verdes engordaran, como si hubieran sido dibujados con un marcador grueso en lugar de un bolígrafo fino.
-
-El Cincel era muy sensible: En el código anterior, yo le dije a la máquina: "Si raspo el símbolo y sobrevive al menos el 5% de su masa, es un cuadrado macizo". Como los círculos habían "engordado", al rasparlos sobrevivía un poco de tinta en el centro, superando ese 5%, y la máquina marcaba todo como cuadrado rojo.
-
-La Solución Definitiva: "Cincel 2.0 y Filtro Láser"
-He ajustado la precisión de la aplicación con dos cambios clave:
-
-Filtro Láser: Ajusté el umbral de luz (de 6 a 12). Ahora el programa no "engordará" la tinta. Los círculos se mantendrán finos y los cuadrados macizos.
-
-Cincel 2.0 Estricto: Ahora la regla es implacable. Para que la máquina marque un Cuadrado Rojo, el símbolo debe ser denso y además, al rasparle los bordes, debe sobrevivir más del 30% de su núcleo (ya no el 5%). Los círculos huecos, por más borrosos que estén, jamás sobrevivirán a esta prueba.
-
-Código Definitivo (Actualiza tu app.py)
-Ve a tu repositorio cvc-movil-app, borra todo el contenido de tu archivo app.py y pega exactamente este código (me aseguré de que esté completo):
-
-Python
 import streamlit as st
 import cv2
 import numpy as np
@@ -38,7 +18,7 @@ Tome una foto directa del campo visual impreso.
 """)
 
 # ==========================================
-# 🔒 MOTOR DE VISIÓN (CINCEL 2.0 ESTRICTO)
+# 🔒 MOTOR DE VISIÓN (CALIBRE FÍSICO)
 # ==========================================
 def find_and_clean_axes(thresh):
     alto, ancho = thresh.shape
@@ -84,36 +64,30 @@ def find_and_clean_axes(thresh):
     
     return (cx, cy), borrador_anti_regla, dist_60
 
-def classify_symbol(roi_bin):
-    """Prueba Pericial del Cincel 2.0"""
+def classify_symbol(roi_bin, pixels_por_10_grados):
+    """Clasificador Pericial basado en Escala Física Real"""
     h, w = roi_bin.shape
     area_caja = float(w * h)
     tinta = cv2.countNonZero(roi_bin)
 
-    # Ignorar polvo o ruido minúsculo
-    if tinta < 4 or area_caja < 4:
+    if tinta < 3 or area_caja < 3:
         return 'ignorar'
 
-    # Puntos pequeños que sobrevivieron el filtro de polvo siempre son círculos
-    if tinta < 12:
+    # CALIBRE MATEMÁTICO: Un cuadrado negro mide aprox 15% de la distancia de 10 grados
+    lado_esperado = pixels_por_10_grados * 0.15 
+    area_esperada = lado_esperado ** 2
+
+    # Si la mancha tiene menos del 35% de la tinta de un cuadrado real, 
+    # es físicamente imposible que sea un cuadrado. Es un punto o ruido (Verde).
+    if tinta < (area_esperada * 0.35):
         return 'visto'
 
+    # Si es lo suficientemente grande, comprobamos que sea denso (no un círculo hueco)
     densidad = tinta / area_caja
-
-    # Para ser considerado CUADRADO, primero debe verse como un bloque denso
-    if densidad > 0.55:
-        # Raspamos suavemente los bordes (Erosión)
-        kernel = np.ones((2, 2), np.uint8)
-        eroded = cv2.erode(roi_bin, kernel, iterations=1)
-        tinta_nucleo = cv2.countNonZero(eroded)
-        
-        # SÚPER FILTRO: Si después de raspar los bordes, sobrevive más del 30% del núcleo, es macizo (Cuadrado).
-        # Un círculo que engordó por la foto perderá casi toda su tinta aquí.
-        if tinta_nucleo > (tinta * 0.30):
-            return 'fallado'
-            
-    # Si no superó la prueba de densidad o de núcleo duro, es un círculo hueco
-    return 'visto'
+    if densidad > 0.45:
+        return 'fallado'
+    else:
+        return 'visto'
 
 def detect_and_classify_symbols(img_bin, borrador_anti_regla, centro, pixels_por_10_grados):
     alto, ancho = img_bin.shape
@@ -126,7 +100,10 @@ def detect_and_classify_symbols(img_bin, borrador_anti_regla, centro, pixels_por
     simbolos_unidos = cv2.dilate(campo_limpio, np.ones((grosor_pegamento, grosor_pegamento), np.uint8))
     
     num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(simbolos_unidos, connectivity=8)
-    area_min, area_max = (ancho * 0.001) ** 2, (ancho * 0.03) ** 2
+    
+    # Límites de tamaño muy amplios para que nada quede afuera
+    area_min = (ancho * 0.0005) ** 2 
+    area_max = (ancho * 0.04) ** 2
     cx, cy = centro
     cuadrados_count, circulos_count = 0, 0
     
@@ -135,13 +112,14 @@ def detect_and_classify_symbols(img_bin, borrador_anti_regla, centro, pixels_por
     for i in range(1, num_labels): 
         x, y, w, h, area = stats[i, cv2.CC_STAT_LEFT], stats[i, cv2.CC_STAT_TOP], stats[i, cv2.CC_STAT_WIDTH], stats[i, cv2.CC_STAT_HEIGHT], stats[i, cv2.CC_STAT_AREA]
         
-        if area_min < area < area_max and 0.4 < (w/float(h)) < 2.5:
+        if area_min < area < area_max and 0.3 < (w/float(h)) < 3.0:
             px, py = x + w/2.0, y + h/2.0
             
             if (math.hypot(px - cx, py - cy) / pixels_por_10_grados) * 10.0 <= 41.0:
                 roi = campo_limpio[y:y+h, x:x+w]
                 
-                tipo = classify_symbol(roi)
+                # Le pasamos la escala física al clasificador
+                tipo = classify_symbol(roi, pixels_por_10_grados)
                 
                 if tipo == 'fallado':
                     cuadrados_count += 1
@@ -246,7 +224,7 @@ def procesar_panel_camara(titulo_ojo, key_suffix):
     t_cuad, t_circ = 0, 0
     
     if archivo is not None:
-        with st.spinner(f"Analizando con IA Pericial Topológica..."):
+        with st.spinner(f"Analizando Escala Física Real..."):
             nparr = np.frombuffer(archivo.getvalue(), np.uint8)
             img_raw = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
             
@@ -261,8 +239,7 @@ def procesar_panel_camara(titulo_ojo, key_suffix):
             img_original = img.copy()
             
             gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-            # FILTRO LÁSER: Ajustado el parámetro a 12 (antes 6) para evitar engordar la tinta
-            thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 45, 12)
+            thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 51, 10)
             
             try:
                 centro, borrador_anti_regla, dist_60 = find_and_clean_axes(thresh)
@@ -285,9 +262,12 @@ def procesar_panel_camara(titulo_ojo, key_suffix):
             st.markdown(f"**Corrección Pericial Manual**")
             col_a, col_b = st.columns(2)
             with col_a:
-                cuadrados_final = st.number_input("Cuadrados (Fallados):", min_value=0, max_value=104, value=t_cuad, step=1, key=f"cuad_{key_suffix}")
+                # BLINDAJE ANTI-CRASH: Nunca intentará mostrar un número mayor a 104, evitando el error rojo
+                val_cuad_seguro = min(t_cuad, 104)
+                cuadrados_final = st.number_input("Cuadrados (Fallados):", min_value=0, max_value=104, value=val_cuad_seguro, step=1, key=f"cuad_{key_suffix}")
             with col_b:
-                circulos_final = st.number_input("Círculos (Vistos):", min_value=0, max_value=104, value=t_circ, step=1, key=f"circ_{key_suffix}")
+                val_circ_seguro = min(t_circ, 104)
+                circulos_final = st.number_input("Círculos (Vistos):", min_value=0, max_value=104, value=val_circ_seguro, step=1, key=f"circ_{key_suffix}")
                 
             grados_finales = (cuadrados_final / 104.0) * 320.0
             incapacidad_final = (grados_finales / 320.0) * 100 * 0.25
@@ -328,4 +308,4 @@ if img_od_orig is not None or img_oi_orig is not None:
         📥 DESCARGAR PDF
     </a>
     '''
-st.markdown(html_btn, unsafe_allow_html=True)
+    st.markdown(html_btn, unsafe_allow_html=True)
