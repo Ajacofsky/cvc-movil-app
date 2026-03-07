@@ -18,7 +18,7 @@ Tome una foto directa del campo visual impreso.
 """)
 
 # ==========================================
-# 🔒 MOTOR DE VISIÓN (RADAR)
+# 🔒 MOTOR DE VISIÓN (RADAR DE PRECISIÓN)
 # ==========================================
 def find_and_clean_axes(thresh):
     alto, ancho = thresh.shape
@@ -65,48 +65,43 @@ def find_and_clean_axes(thresh):
     return (cx, cy), borrador_anti_regla, dist_60
 
 # ==========================================
-# 🧠 EL ESCÁNER DE RAYOS X
+# 🧠 EL CLASIFICADOR GEOMÉTRICO INMUTABLE
 # ==========================================
 def classify_symbol(roi_bin, pixels_por_10_grados):
     h, w = roi_bin.shape
     area_caja = float(w * h)
     tinta = cv2.countNonZero(roi_bin)
 
-    # Ignorar ruido microscópico
-    if tinta < 3 or area_caja < 3:
+    # 1. Ignorar pelusas o ruido de la foto
+    if tinta < 4 or area_caja < 4:
         return 'ignorar'
 
-    # Calibre Físico: Cuánto debería medir un cuadrado real
-    lado_esperado = pixels_por_10_grados * 0.16 
+    lado_esperado = pixels_por_10_grados * 0.15 
     area_esperada = lado_esperado ** 2
 
-    # 1. FILTRO DE TAMAÑO ESTRICTO
-    # Si la mancha no tiene ni la mitad del tamaño de un cuadrado, es un punto (Verde)
-    if area_caja < (area_esperada * 0.40):
-        return 'visto'
-        
-    if tinta < (area_esperada * 0.35):
+    # 2. Si la mancha es muy pequeña comparada con un cuadrado estándar, es un círculo verde.
+    if area_caja < (area_esperada * 0.40) or tinta < (area_esperada * 0.30):
         return 'visto'
 
-    # 2. ESCÁNER DE RAYOS X (La prueba final del núcleo hueco)
-    # Extraemos un cuadradito que representa el 40% del puro centro del símbolo
+    # 3. DOBLE FILTRO BLINDADO
+    # Filtro A (Rayos X): Analizamos el corazón del símbolo
     cx, cy = w // 2, h // 2
-    rw, rh = max(1, int(w * 0.20)), max(1, int(h * 0.20))
+    rw, rh = max(1, int(w * 0.15)), max(1, int(h * 0.15))
     nucleo = roi_bin[cy-rh : cy+rh+1, cx-rw : cx+rw+1]
     
-    tinta_nucleo = cv2.countNonZero(nucleo)
-    area_nucleo = float(nucleo.size)
+    if nucleo.size > 0:
+        densidad_nucleo = cv2.countNonZero(nucleo) / float(nucleo.size)
+        # Si el centro no es negro intenso (<70% tinta), es un círculo que se emborronó
+        if densidad_nucleo < 0.70:
+            return 'visto'
 
-    # Si el centro está hueco (menos del 45% de tinta negra en el núcleo),
-    # es físicamente imposible que sea un cuadrado. ¡Es un anillo borroso!
-    if tinta_nucleo < (area_nucleo * 0.45):
-        return 'visto'
-
-    # 3. FILTRO DE BLOQUE SÓLIDO
-    # Si es grande, y además su núcleo es negro sólido, comprobamos su densidad general
-    densidad = tinta / area_caja
-    if densidad > 0.50:
-        return 'fallado' # Es un CUADRADO ROJO
+    # Filtro B (La Ley de Pi/4): 
+    # Un círculo, por más sólido que se vea, no puede llenar las 4 esquinas de su caja.
+    # Su máxima densidad teórica es 0.785. Un cuadrado supera el 0.85.
+    densidad_total = tinta / area_caja
+    
+    if densidad_total > 0.75: # Umbral mágico que divide el círculo del cuadrado
+        return 'fallado'
     else:
         return 'visto'
 
@@ -138,7 +133,7 @@ def detect_and_classify_symbols(img_bin, borrador_anti_regla, centro, pixels_por
             if (math.hypot(px - cx, py - cy) / pixels_por_10_grados) * 10.0 <= 41.0:
                 roi = campo_limpio[y:y+h, x:x+w]
                 
-                # Pasamos la escala real para activar el Escáner de Rayos X
+                # Clasificación Geométrica
                 tipo = classify_symbol(roi, pixels_por_10_grados)
                 
                 if tipo == 'fallado':
@@ -244,7 +239,7 @@ def procesar_panel_camara(titulo_ojo, key_suffix):
     t_cuad, t_circ = 0, 0
     
     if archivo is not None:
-        with st.spinner(f"Analizando con Escáner de Rayos X..."):
+        with st.spinner(f"Aplicando Inteligencia Geométrica..."):
             nparr = np.frombuffer(archivo.getvalue(), np.uint8)
             img_raw = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
             
@@ -259,7 +254,7 @@ def procesar_panel_camara(titulo_ojo, key_suffix):
             img_original = img.copy()
             
             gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-            thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 51, 12)
+            thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 51, 10)
             
             try:
                 centro, borrador_anti_regla, dist_60 = find_and_clean_axes(thresh)
@@ -282,7 +277,6 @@ def procesar_panel_camara(titulo_ojo, key_suffix):
             st.markdown(f"**Corrección Pericial Manual**")
             col_a, col_b = st.columns(2)
             with col_a:
-                # Sistema Anti-Crash: Nunca excederá 104, evitando los carteles rojos de error
                 val_cuad_seguro = min(t_cuad, 104)
                 cuadrados_final = st.number_input("Cuadrados (Fallados):", min_value=0, max_value=104, value=val_cuad_seguro, step=1, key=f"cuad_{key_suffix}")
             with col_b:
@@ -294,38 +288,4 @@ def procesar_panel_camara(titulo_ojo, key_suffix):
             
             st.info(f"👉 Incapacidad Detectada: {incapacidad_final:.2f}%")
             
-    return incapacidad_final, grados_finales, img_original
-
-if modo_evaluacion == "Unilateral (1 Ojo)":
-    incap_od, grados_od, img_od_orig = procesar_panel_camara("Ojo Evaluado", "unico")
-    incap_oi, grados_oi, img_oi_orig = 0.0, 0.0, None
-else:
-    incap_od, grados_od, img_od_orig = procesar_panel_camara("Ojo Derecho (OD)", "od")
-    st.divider()
-    incap_oi, grados_oi, img_oi_orig = procesar_panel_camara("Ojo Izquierdo (OI)", "oi")
-
-st.divider()
-
-st.header("📋 Exportar Dictamen")
-nombre_archivo_input = st.text_input("Nombre del paciente para el archivo:", placeholder="Ej: Perez_Juan")
-incap_total_bilateral = 0.0
-
-if modo_evaluacion == "Bilateral (OD y OI)":
-    if img_od_orig is not None or img_oi_orig is not None:
-        suma_aritmetica = incap_od + incap_oi
-        incap_total_bilateral = suma_aritmetica * 1.5
-        st.metric("INCAPACIDAD TOTAL BILATERAL", f"{incap_total_bilateral:.2f}%")
-else:
-    if img_od_orig is not None:
-        st.metric("INCAPACIDAD UNILATERAL", f"{incap_od:.2f}%")
-
-if img_od_orig is not None or img_oi_orig is not None:
-    nombre_archivo = nombre_archivo_input.strip().replace(" ", "_") if nombre_archivo_input.strip() else "Dictamen"
-    b64_pdf = generar_pdf_moderno(incap_od, grados_od, img_od_orig, incap_oi, grados_oi, img_oi_orig, incap_total_bilateral, modo_evaluacion)
-    
-    html_btn = f'''
-    <a href="data:application/pdf;base64,{b64_pdf}" download="Dictamen_Pericial_{nombre_archivo}.pdf" style="display: block; padding: 15px; background-color: #2980b9; color: white; text-align: center; text-decoration: none; border-radius: 8px; font-weight: bold; font-size: 18px; margin-top: 20px;">
-        📥 DESCARGAR PDF
-    </a>
-    '''
-    st.markdown(html_btn, unsafe_allow_html=True)
+    return incapacidad_final, grados_final
