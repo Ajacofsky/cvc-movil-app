@@ -14,18 +14,18 @@ st.title("📱 Escáner Móvil Pericial CVC")
 st.markdown("""
 **Modo Captura por Cámara**
 Tome una foto directa del campo visual impreso. 
-*💡 Consejo de Oro: Acerque la cámara para que el gráfico ocupe casi toda la pantalla.*
+*💡 Consejo Pericial: Acerque la cámara para que el gráfico ocupe casi toda la pantalla.*
 """)
 
 # ==========================================
-# 🔒 MOTOR DE VISIÓN (RADAR ADAPTATIVO)
+# 🔒 MOTOR DE VISIÓN (RADAR ADAPTATIVO GIGANTE)
 # ==========================================
 def find_and_clean_axes(thresh):
     alto, ancho = thresh.shape
     
-    # Aislar líneas rectas (Más estrictos)
-    k_len_h = max(20, int(ancho * 0.15))
-    k_len_v = max(20, int(alto * 0.15))
+    # Aislar líneas rectas (Más estrictos para fotos grandes)
+    k_len_h = max(30, int(ancho * 0.18))
+    k_len_v = max(30, int(alto * 0.18))
     kernel_h_clean = cv2.getStructuringElement(cv2.MORPH_RECT, (k_len_h, 1))
     kernel_v_clean = cv2.getStructuringElement(cv2.MORPH_RECT, (1, k_len_v))
     
@@ -44,9 +44,9 @@ def find_and_clean_axes(thresh):
         cy = int(alto * 0.5)
         cx = int(ancho * 0.5)
     
-    # ESCALA A PRUEBA DE INCLINACIÓN (Tolerancia a fotos torcidas)
+    # ESCALA A PRUEBA DE INCLINACIÓN (Súper tolerancia para líneas diagonales)
     y_coords, x_coords = np.where(lineas_h_puras > 0)
-    tolerancia_y = max(20, int(alto * 0.05)) # Margen amplio para líneas diagonales
+    tolerancia_y = max(30, int(alto * 0.08)) # Margen enorme
     mask_cerca_cy = np.abs(y_coords - cy) < tolerancia_y
     x_validos = x_coords[mask_cerca_cy]
     
@@ -57,9 +57,9 @@ def find_and_clean_axes(thresh):
     else:
         dist_60 = ancho * 0.35 
         
-    dist_60 = min(dist_60, ancho * 0.48) # Límite seguro
+    dist_60 = min(dist_60, ancho * 0.49) # Límite seguro
     
-    # Fabricar el Borrador Anti-Regla (Bisturí fino)
+    # Borrador Anti-Regla (Bisturí más fino para mayor resolución)
     grosor_fino_h = max(2, int(alto*0.003))
     grosor_fino_v = max(2, int(ancho*0.003))
     borrador_h_ticks = cv2.dilate(lineas_h_puras, np.ones((grosor_fino_h, 1), np.uint8))
@@ -70,6 +70,8 @@ def find_and_clean_axes(thresh):
 
 def classify_symbol(roi_bin):
     h, w = roi_bin.shape
+    # Regla de 5 píxeles se mantiene para blindaje, pero al aumentar la resolución la foto
+    # los símbolos serán más grandes y saltarán este filtro sin problemas.
     if cv2.countNonZero(roi_bin) < 5: return 'ignorar'
     k_size = max(2, int(min(w, h) * 0.40))
     eroded_roi = cv2.erode(roi_bin, np.ones((k_size, k_size), np.uint8), iterations=1)
@@ -83,12 +85,13 @@ def detect_and_classify_symbols(img_bin, borrador_anti_regla, centro, pixels_por
     
     campo_limpio = cv2.subtract(img_bin, borrador_anti_regla)
     
-    # Pegamento más sutil para fotos reducidas
-    grosor_pegamento = max(2, int(alto*0.003)) + 1
+    # Pegamiento adaptativo para mayor resolución
+    grosor_pegamento = max(2, int(alto*0.002)) + 1
     simbolos_unidos = cv2.dilate(campo_limpio, np.ones((grosor_pegamento, grosor_pegamento), np.uint8))
     
     num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(simbolos_unidos, connectivity=8)
-    area_min, area_max = (ancho * 0.0015) ** 2, (ancho * 0.025) ** 2
+    # Límites de área ajustados: Ahora buscamos símbolos un poquito más grandes
+    area_min, area_max = (ancho * 0.0018) ** 2, (ancho * 0.03) ** 2
     cx, cy = centro
     cuadrados_count, circulos_count = 0, 0
     
@@ -111,7 +114,7 @@ def detect_and_classify_symbols(img_bin, borrador_anti_regla, centro, pixels_por
     return img_auditoria, cuadrados_count, circulos_count
 
 # ==========================================
-# GENERADOR DE PDF
+# GENERADOR DE PDF (MÁS NÍTIDO)
 # ==========================================
 def generar_pdf_moderno(incap_od, grados_od, img_od_orig, incap_oi, grados_oi, img_oi_orig, incap_total, modo):
     pdf = FPDF()
@@ -142,7 +145,8 @@ def generar_pdf_moderno(incap_od, grados_od, img_od_orig, incap_oi, grados_oi, i
         if img_val is not None:
             with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp:
                 cv2.imwrite(tmp.name, img_val)
-                pdf.image(tmp.name, x=50, y=y_images, w=110) 
+                # Imagen centrada, un poco más pequeña (Ancho 100) para mayor nitidez
+                pdf.image(tmp.name, x=55, y=y_images, w=100) 
             os.remove(tmp.name)
         pdf.set_y(y_images + 115)
 
@@ -182,7 +186,7 @@ def generar_pdf_moderno(incap_od, grados_od, img_od_orig, incap_oi, grados_oi, i
         pdf.cell(0, 14, f" INCAPACIDAD UNILATERAL DEFINITIVA: {val:.2f}%", 0, 1, 'C', fill=True)
         
     pdf.set_text_color(0, 0, 0)
-    pdf.ln(20)
+    pdf.ln(15)
     pdf.set_draw_color(0, 0, 0)
     pdf.line(65, pdf.get_y(), 145, pdf.get_y())
     pdf.set_font("Arial", '', 10)
@@ -204,26 +208,27 @@ def procesar_panel_camara(titulo_ojo, key_suffix):
     t_cuad, t_circ = 0, 0
     
     if archivo is not None:
-        with st.spinner(f"Analizando captura..."):
+        with st.spinner(f"Analizando captura (Súper Resolución Pericial activa)..."):
             nparr = np.frombuffer(archivo.getvalue(), np.uint8)
             img_raw = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
             
-            # 1. COMPRESOR ÓPTICO
+            # 🚀 COMPRESOR ÓPTICO OPTIMIZADO: Ahora comprime a 1800 píxeles, NO a 1000.
+            # Esto hará que los símbolos negros sean más grandes y legibles.
             alto_raw, ancho_raw = img_raw.shape[:2]
-            max_dimension = 1000
+            max_dimension = 1800 # <--- CAMBIO CLAVE AQUÍ
             if ancho_raw > max_dimension or alto_raw > max_dimension:
                 escala = max_dimension / max(ancho_raw, alto_raw)
-                img = cv2.resize(img_raw, (int(ancho_raw * escala), int(alto_raw * escala)), interpolation=cv2.INTER_AREA)
+                img = cv2.resize(img_raw, (int(ancho_raw * escala), int(alto_raw * escala)), interpolation=cv2.INTER_CUBIC)
             else:
                 img = img_raw
 
             img_original = img.copy()
             
-            # 2. UMBRAL ADAPTATIVO (Magia contra sombras)
+            # UMBRAL ADAPTATIVO MÁS RESISTENTE
             gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-            # Analiza áreas de 41x41 píxeles para ignorar sombras gigantes y rescatar puntos negros
-            thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 41, 10)
-            # Limpiar ruidito leve de la foto
+            thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 51, 10)
+            
+            # Limpieza suave de Moiré y cuadrícula del monitor
             thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, np.ones((2,2), np.uint8))
             
             try:
@@ -238,11 +243,11 @@ def procesar_panel_camara(titulo_ojo, key_suffix):
                     img_pantalla[mask, i] = img_auditoria_bin[mask, i]
                 cv2.circle(img_pantalla, centro, int(4.0 * pixels_por_10_grados), (0, 165, 255), 3)
 
-                st.success("✅ ¡Análisis completado!")
+                st.success("✅ ¡Análisis completado a Súper Resolución!")
                 st.image(Image.fromarray(cv2.cvtColor(img_pantalla, cv2.COLOR_BGR2RGB)), caption=f"Auditoría Visual {titulo_ojo}", use_container_width=True)
                 
             except Exception as e:
-                st.error(f"⚠️ Hubo un problema al procesar la imagen. Intente evitar sombras muy duras. Detalle: {e}")
+                st.error(f"⚠️ Error al encuadrar la foto. Acerque más la cámara al círculo. Detalle: {e}")
                 
             st.markdown(f"**Corrección Pericial Manual**")
             col_a, col_b = st.columns(2)
