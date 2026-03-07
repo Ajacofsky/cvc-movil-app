@@ -189,4 +189,126 @@ def generar_pdf_moderno(incap_od, grados_od, img_od_orig, incap_oi, grados_oi, i
         pdf.set_fill_color(235, 245, 255)
         pdf.set_font("Arial", 'B', 12)
         pdf.cell(0, 10, " OJO IZQUIERDO (OI)", 0, 1, 'L', fill=True)
-        pdf.
+        pdf.set_font("Arial", '', 11)
+        pdf.cell(0, 8, f"   - Grados de perdida visual:  {grados_oi:.1f} grados", 0, 1)
+        pdf.cell(0, 8, f"   - Incapacidad Unilateral:    {incap_oi:.2f}%", 0, 1)
+        pdf.ln(3)
+        
+    pdf.ln(5)
+    pdf.set_font("Arial", 'B', 14)
+    if modo == "Bilateral (OD y OI)":
+        pdf.set_fill_color(46, 134, 193) 
+        pdf.set_text_color(255, 255, 255)
+        pdf.cell(0, 14, f" INCAPACIDAD TOTAL BILATERAL: {incap_total:.2f}%", 0, 1, 'C', fill=True)
+    else:
+        pdf.set_fill_color(46, 134, 193)
+        pdf.set_text_color(255, 255, 255)
+        val = incap_od if incap_od > 0 else incap_oi
+        pdf.cell(0, 14, f" INCAPACIDAD UNILATERAL DEFINITIVA: {val:.2f}%", 0, 1, 'C', fill=True)
+        
+    pdf.set_text_color(0, 0, 0)
+    pdf.ln(15)
+    pdf.set_draw_color(0, 0, 0)
+    pdf.line(65, pdf.get_y(), 145, pdf.get_y())
+    pdf.set_font("Arial", '', 10)
+    pdf.cell(0, 5, "Firma y Sello del Perito Medico", 0, 1, 'C')
+    
+    pdf_bytes = pdf.output(dest='S').encode('latin-1')
+    return base64.b64encode(pdf_bytes).decode()
+
+# ==========================================
+# INTERFAZ WEB MÓVIL
+# ==========================================
+modo_evaluacion = st.radio("Seleccione el Tipo de Evaluación:", ["Unilateral (1 Ojo)", "Bilateral (OD y OI)"], horizontal=True)
+st.divider()
+
+def procesar_panel_camara(titulo_ojo, key_suffix):
+    archivo = st.camera_input(f"📷 Capturar - {titulo_ojo}", key=f"cam_{key_suffix}")
+    
+    incapacidad_final, grados_finales, img_original = 0.0, 0.0, None
+    t_cuad, t_circ = 0, 0
+    
+    if archivo is not None:
+        with st.spinner(f"Analizando con IA Pericial Topológica..."):
+            nparr = np.frombuffer(archivo.getvalue(), np.uint8)
+            img_raw = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+            
+            alto_raw, ancho_raw = img_raw.shape[:2]
+            max_dimension = 1800 
+            if ancho_raw > max_dimension or alto_raw > max_dimension:
+                escala = max_dimension / max(ancho_raw, alto_raw)
+                img = cv2.resize(img_raw, (int(ancho_raw * escala), int(alto_raw * escala)), interpolation=cv2.INTER_CUBIC)
+            else:
+                img = img_raw
+
+            img_original = img.copy()
+            
+            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+            # Filtro ideal para fotos de celular
+            thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 51, 6)
+            
+            try:
+                centro, borrador_anti_regla, dist_60 = find_and_clean_axes(thresh)
+                pixels_por_10_grados = float(dist_60 / 6.0)
+                
+                img_auditoria_bin, t_cuad, t_circ = detect_and_classify_symbols(thresh, borrador_anti_regla, centro, pixels_por_10_grados)
+                
+                img_pantalla = img.copy()
+                for i in range(3):
+                    mask = img_auditoria_bin[:,:,i] != 255
+                    img_pantalla[mask, i] = img_auditoria_bin[mask, i]
+                cv2.circle(img_pantalla, centro, int(4.0 * pixels_por_10_grados), (0, 165, 255), 3)
+
+                st.success("✅ ¡Análisis completado!")
+                st.image(Image.fromarray(cv2.cvtColor(img_pantalla, cv2.COLOR_BGR2RGB)), caption=f"Auditoría Visual {titulo_ojo}", use_container_width=True)
+                
+            except Exception as e:
+                st.error(f"⚠️ Error al encuadrar la foto. Acerque más la cámara al círculo. Detalle: {e}")
+                
+            st.markdown(f"**Corrección Pericial Manual**")
+            col_a, col_b = st.columns(2)
+            with col_a:
+                cuadrados_final = st.number_input("Cuadrados (Fallados):", min_value=0, max_value=104, value=t_cuad, step=1, key=f"cuad_{key_suffix}")
+            with col_b:
+                circulos_final = st.number_input("Círculos (Vistos):", min_value=0, max_value=104, value=t_circ, step=1, key=f"circ_{key_suffix}")
+                
+            grados_finales = (cuadrados_final / 104.0) * 320.0
+            incapacidad_final = (grados_finales / 320.0) * 100 * 0.25
+            
+            st.info(f"👉 Incapacidad Detectada: {incapacidad_final:.2f}%")
+            
+    return incapacidad_final, grados_finales, img_original
+
+if modo_evaluacion == "Unilateral (1 Ojo)":
+    incap_od, grados_od, img_od_orig = procesar_panel_camara("Ojo Evaluado", "unico")
+    incap_oi, grados_oi, img_oi_orig = 0.0, 0.0, None
+else:
+    incap_od, grados_od, img_od_orig = procesar_panel_camara("Ojo Derecho (OD)", "od")
+    st.divider()
+    incap_oi, grados_oi, img_oi_orig = procesar_panel_camara("Ojo Izquierdo (OI)", "oi")
+
+st.divider()
+
+st.header("📋 Exportar Dictamen")
+nombre_archivo_input = st.text_input("Nombre del paciente para el archivo:", placeholder="Ej: Perez_Juan")
+incap_total_bilateral = 0.0
+
+if modo_evaluacion == "Bilateral (OD y OI)":
+    if img_od_orig is not None or img_oi_orig is not None:
+        suma_aritmetica = incap_od + incap_oi
+        incap_total_bilateral = suma_aritmetica * 1.5
+        st.metric("INCAPACIDAD TOTAL BILATERAL", f"{incap_total_bilateral:.2f}%")
+else:
+    if img_od_orig is not None:
+        st.metric("INCAPACIDAD UNILATERAL", f"{incap_od:.2f}%")
+
+if img_od_orig is not None or img_oi_orig is not None:
+    nombre_archivo = nombre_archivo_input.strip().replace(" ", "_") if nombre_archivo_input.strip() else "Dictamen"
+    b64_pdf = generar_pdf_moderno(incap_od, grados_od, img_od_orig, incap_oi, grados_oi, img_oi_orig, incap_total_bilateral, modo_evaluacion)
+    
+    html_btn = f'''
+    <a href="data:application/pdf;base64,{b64_pdf}" download="Dictamen_Pericial_{nombre_archivo}.pdf" style="display: block; padding: 15px; background-color: #2980b9; color: white; text-align: center; text-decoration: none; border-radius: 8px; font-weight: bold; font-size: 18px; margin-top: 20px;">
+        📥 DESCARGAR PDF
+    </a>
+    '''
+    st.markdown(html_btn, unsafe_allow_html=True)
